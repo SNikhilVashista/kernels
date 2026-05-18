@@ -39,15 +39,11 @@ __global__ void softmax_attention_kernel(
 ) {
     int row = blockIdx.x;
     int tid = threadIdx.x;
-
     extern __shared__ float shared[];
-
     float* scores = shared;          // size N
     float* partial = shared + N;     // size blockDim.x
-
     float scale = rsqrtf((float)d);
-
-    // 1. Compute scores[row, j] = Q[row] dot K[j]
+    // pass 1. Compute scores[row, j] = Q[row] dot K[j]
     for (int j = tid; j < N; j += blockDim.x) {
         float dot = 0.0f;
 
@@ -57,57 +53,43 @@ __global__ void softmax_attention_kernel(
 
         scores[j] = dot * scale;
     }
-
     __syncthreads();
-
-    // 2. Find max score for numerical stability
+    // pass 2. Find max score for numerical stability
     float local_max = -INFINITY;
-
     for (int j = tid; j < N; j += blockDim.x) {
         local_max = fmaxf(local_max, scores[j]);
     }
-
     partial[tid] = local_max;
     __syncthreads();
-
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
         if (tid < stride) {
             partial[tid] = fmaxf(partial[tid], partial[tid + stride]);
         }
         __syncthreads();
     }
-
     float max_score = partial[0];
-
-    // 3. Compute exp(score - max) and sum
+    // pass 3. Compute exp(score - max) and sum
     float local_sum = 0.0f;
-
     for (int j = tid; j < N; j += blockDim.x) {
         scores[j] = expf(scores[j] - max_score);
         local_sum += scores[j];
     }
-
     partial[tid] = local_sum;
     __syncthreads();
-
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
         if (tid < stride) {
             partial[tid] += partial[tid + stride];
         }
         __syncthreads();
     }
-
     float sum_exp = partial[0];
-
-    // 4. Compute output O[row, col]
+    // pass 3. Compute output O[row, col]
     for (int col = tid; col < d; col += blockDim.x) {
         float out = 0.0f;
-
         for (int j = 0; j < N; j++) {
             float weight = scores[j] / sum_exp;
             out += weight * V[j * d + col];
         }
-
         O[row * d + col] = out;
     }
 }
@@ -124,33 +106,25 @@ void softmax_attention_cpu(
     vector<float> scores(N);
     for (int i = 0; i < M; i++) {
         float max_score = -INFINITY;
-
         for (int j = 0; j < N; j++) {
             float dot = 0.0f;
-
             for (int k = 0; k < d; k++) {
                 dot += Q[i * d + k] * K[j * d + k];
             }
-
             scores[j] = dot * scale;
             max_score = max(max_score, scores[j]);
         }
-
         float sum_exp = 0.0f;
-
         for (int j = 0; j < N; j++) {
             scores[j] = exp(scores[j] - max_score);
             sum_exp += scores[j];
         }
-
         for (int col = 0; col < d; col++) {
             float out = 0.0f;
-
             for (int j = 0; j < N; j++) {
                 float weight = scores[j] / sum_exp;
                 out += weight * V[j * d + col];
             }
-
             O[i * d + col] = out;
         }
     }
