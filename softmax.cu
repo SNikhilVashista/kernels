@@ -43,7 +43,7 @@ __global__ void softmax_attention_kernel(
     float* scores = shared;          // size N
     float* partial = shared + N;     // size blockDim.x
     float scale = rsqrtf((float)d);
-    // pass 1. Compute scores[row, j] = Q[row] dot K[j]
+    // Compute scores[row, j] = Q[row] dot K[j]
     for (int j = tid; j < N; j += blockDim.x) {
         float dot = 0.0f;
 
@@ -54,7 +54,7 @@ __global__ void softmax_attention_kernel(
         scores[j] = dot * scale;
     }
     __syncthreads();
-    // pass 2. Find max score for numerical stability
+    // pass 1. Find max score for numerical stability
     float local_max = -INFINITY;
     for (int j = tid; j < N; j += blockDim.x) {
         local_max = fmaxf(local_max, scores[j]);
@@ -68,7 +68,7 @@ __global__ void softmax_attention_kernel(
         __syncthreads();
     }
     float max_score = partial[0];
-    // pass 3. Compute exp(score - max) and sum
+    // pass 2. Compute exp(score - max) and sum
     float local_sum = 0.0f;
     for (int j = tid; j < N; j += blockDim.x) {
         scores[j] = expf(scores[j] - max_score);
