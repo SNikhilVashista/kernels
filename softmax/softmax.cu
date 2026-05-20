@@ -23,17 +23,18 @@ __global__ void compute_scores_kernel(float *Q, float* K, float* scores, int M, 
     int tid_col = blockIdx.x*blockDim.x+threadIdx.x;
     int tid_row = blockIdx.y*blockDim.y+threadIdx.y;
     if(tid_row<M&&tid_col<N){
-        float sum = 0;
+        float sum = 0.0f;
          for (int feature = 0; feature < d; feature++) {
-            float q_val = Q[tid_row * d + feature];
-            float k_val = K[tid_col * d + feature];
+            float q_value = Q[tid_row * d + feature];
+            float k_value = K[tid_col * d + feature];
 
-            sum += q_val * k_val;
+            sum += q_value * k_value;
         }
         scores[tid_row*N+tid_col]=sum/sqrtf((float)d);
     }
 }
 
+//one thread per row implementation
 __global__ void compute_softmax_kernel1(float* scores, int M, int N){
     int row = blockIdx.x*blockDim.x+threadIdx.x;
     if(row<M){
@@ -45,14 +46,14 @@ __global__ void compute_softmax_kernel1(float* scores, int M, int N){
                 row_max=val;
         }
         //computing exp(score - max) and sum
-        float row_sum=0;
+        float norm=0.0f;
         for(int col=0;col<N;col++){
             float e = expf(scores[row*N+col] - row_max);
             scores[row*N+col] = e;
-            row_sum = row_sum+e;
+            norm = norm+e;
         }
         for(int col=0;col<N;col++){
-            scores[row*N+col]=scores[row*N+col]/row_sum;
+            scores[row*N+col]=scores[row*N+col]/norm;
         }
     }
 }
@@ -60,12 +61,12 @@ __global__ void compute_softmax_kernel1(float* scores, int M, int N){
 
 int main(){
     //  attention(q,k,v) = softmax(qxk(t)/sqrt(d_k)*V)
-    int M=1024,N=1024,d=64;//number of query rows, key/value rows and head dimension
-    int querysize = M*d;
-    int ksize=N*d;
-    int vsize=N*d;
-    int osize=M*d;
-    int scores=M*N;//N comes from ksize as it is N*d, it will become transpose for score computation.
+    size_t M=30000,N=30000,d=64;//number of query rows, key/value rows and head dimension
+    size_t querysize = M*d;
+    size_t ksize=N*d;
+    size_t vsize=N*d;
+    size_t osize=M*d;
+    size_t scores=M*N;//N comes from ksize as it is N*d, it will become transpose for score computation.
     //========Host pointers===
     vector<float> h_query(querysize);
     vector<float> h_key(ksize);
@@ -80,19 +81,19 @@ int main(){
     float *d_scores;
     
     srand(time(0));
-    for(int i=0;i<querysize;i++){
+    for(size_t i=0;i<querysize;i++){
        h_query[i] = static_cast<float>(rand()%10);
     }
-    for(int i=0;i<ksize;i++){
+    for(size_t i=0;i<ksize;i++){
        h_key[i] = static_cast<float>(rand()%10);
     }
-    for(int i=0;i<vsize;i++){
+    for(size_t i=0;i<vsize;i++){
        h_value[i] = static_cast<float>(rand()%10);
     }
-    for(int i=0;i<osize;i++){
-       h_output[i] = 0;
+    for(size_t i=0;i<osize;i++){
+       h_output[i] = 0.0f;
     }
-    for (int i = 0; i < scores; i++) {
+    for (size_t i = 0; i < scores; i++) {
         h_scores[i] = 0.0f;
     }
     CUDA_CHECK(cudaMalloc(&d_query,querysize*sizeof(float)));
@@ -100,11 +101,14 @@ int main(){
     CUDA_CHECK(cudaMalloc(&d_values,vsize*sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_scores,scores*sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_output, osize * sizeof(float)));
+
+    //==MEMCOPY==
     CUDA_CHECK(cudaMemcpy(d_query,&h_query[0],querysize*sizeof(float),cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_key,&h_key[0],ksize*sizeof(float),cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_values,&h_value[0],vsize*sizeof(float),cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_output,&h_output[0],osize*sizeof(float),cudaMemcpyHostToDevice));
-    dim3 threadperblock(16,16);
+    
+    dim3 threadperblock(32,32);
     dim3 numblocks(
         (N+threadperblock.x-1)/threadperblock.x,
         (M+threadperblock.y-1)/threadperblock.y
@@ -118,14 +122,16 @@ int main(){
     Scores column = K row
     Each score = dot product over d features
     */
-    float ms=0;
+    float ms=0.0f;
     cudaEventRecord(start);
     compute_scores_kernel<<<numblocks,threadperblock>>>(d_query,d_key,d_scores,M,N,d);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
     cout<<"--Avg GPU Scores Execution time: "<< ms<<"ms --\n";
-    dim3 softmaxthreads(256);
+
+    //===softmax-gpu-kernel--launch
+    dim3 softmaxthreads(1024);
     dim3 softmaxBlocks((M+softmaxthreads.x-1)/softmaxthreads.x);
     vector<float> h_scores_gpu(scores);
     CUDA_CHECK(cudaMemcpy(&h_scores_gpu[0],d_scores,scores * sizeof(float),cudaMemcpyDeviceToHost));
@@ -137,6 +143,12 @@ int main(){
     cout<<"--GPU Softmax Execution time: "<< ms <<"ms --\n";
     vector<float> h_softmax_gpu(scores);
     CUDA_CHECK(cudaMemcpy(&h_softmax_gpu[0],d_scores,scores*sizeof(float),cudaMemcpyDeviceToHost));
+    // dim3 softmaxthreads(256);
+    // dim3 softmaxBlocks(M);
+    // size_t sharedmemsize = softmaxBlocks.x*sizeof(float);
+   // compute_softmax_kernel2<<<softmaxBlocks,softmaxthreads,sharedmemsize>>>(
+     //   d_scores,M,N
+    //);
     // cout << "\nK matrix:" << endl;
     // for(int row=0;row<N;row++){
     //     for(int col=0;col<d;col++){
@@ -165,12 +177,17 @@ int main(){
     //     }
     //     cout<<endl;
     // }
+    cudaFree(d_scores);
+    cudaFree(d_query);
+    cudaFree(d_key);
+    cudaFree(d_values);
+    cudaFree(d_output);
     auto cstart = chrono::high_resolution_clock::now();
-    //score computation
-    for(int q_row=0;q_row<M;q_row++){
-        for(int k_row=0;k_row<N;k_row++){
-            float sum=0;
-            for(int i=0;i<d;i++){
+    //q*kt computation
+    for(size_t q_row=0;q_row<M;q_row++){
+        for(size_t k_row=0;k_row<N;k_row++){
+            float sum=0.0f;
+            for(size_t i=0;i<d;i++){
                 sum= sum + h_query[q_row*d+i] * h_key[k_row*d+i];
             }
             h_scores[q_row*N+k_row] = sum/sqrt((float)d);
@@ -180,22 +197,22 @@ int main(){
     chrono::duration<double,milli> elapsed = cend-cstart;
     cout<<"--CPU Scores Time = "<<elapsed.count()<<"ms --\n";
     // cout << "\nScores matrix(scaled):" << endl;
-    // for(int row=0;row<M;row++){
-    //     for(int col=0;col<N;col++){
+    // for(size_t row=0;row<M;row++){
+    //     for(size_t col=0;col<N;col++){
     //         cout<<h_scores[row*N+col]<<" ";
     //     }
     //     cout<<endl;
     // }
     // cout << "\nGPU Scores matrix(scaled):" << endl;
-    // for (int row = 0; row < M; row++) {
-    // for (int col = 0; col < N; col++) {
+    // for (size_t row = 0; row < M; row++) {
+    // for (size_t col = 0; col < N; col++) {
     //     cout << h_scores_gpu[row * N + col] << " ";
     // }
     // cout << endl;
     // }
 
 //     float max_error = 0.0f;
-//     for (int i = 0; i < scores; i++) {
+//     for (size_t i = 0; i < scores; i++) {
 //     float error = fabs(h_scores[i] - h_scores_gpu[i]);
 //     if (error > max_error) {
 //         max_error = error;
@@ -205,31 +222,34 @@ int main(){
 // cout << "\nMax error between CPU scores and GPU scores = "
 //      << max_error << endl;
     cstart = chrono::high_resolution_clock::now();
-    for(int row=0;row<M;row++){
+    //attention weight calculation on cpu
+    for(size_t row=0;row<M;row++){
         float row_max = -INFINITY;
         //find row max for this row
-        for(int col=0;col<N;col++){
-            float val = h_scores[row*N+col];
-            if(row_max<val)
-                row_max = val;
+        for(size_t col=0;col<N;col++){
+            size_t i = row*N+col;
+            row_max = max(row_max,h_scores[i]);
         }
         //calc exp sum
-        float row_sum = 0;
-        for(int col=0;col<N;col++){
-            float e = expf(h_scores[row*N+col]-row_max);
-            h_scores[row*N+col] = e;
-            row_sum = row_sum + e;
+        float norm = 0.0f;
+        for(size_t col=0;col<N;col++){
+            size_t i = row*N+col;
+            float e = expf(h_scores[i]-row_max);
+            //inplace storing of e and accumulating norm
+            h_scores[i] = e;
+            norm = norm + e;
         }
         //normalize
-        for(int col=0;col<N;col++){
-            h_scores[row*N+col] = h_scores[row*N+col]/row_sum;
+        for(size_t col=0;col<N;col++){
+            size_t i = row*N+col;
+            h_scores[i] = h_scores[i]/norm;
         }
     }
     cend = chrono::high_resolution_clock::now();
     elapsed = cend-cstart;
     cout<<"--CPU Softmax Time = "<<elapsed.count()<<"ms --\n";
     // float softmax_max_error = 0.0f;
-    // for (int i = 0; i < scores; i++) {
+    // for (size_t i = 0; i < scores; i++) {
     //     float error = fabs(h_scores[i] - h_softmax_gpu[i]);
 
     //     if (error > softmax_max_error) {
@@ -240,9 +260,9 @@ int main(){
     // cout << "\nMax error between CPU softmax and GPU softmax = "
     //     << softmax_max_error << endl;
     // cout << "\nsoftmax on scaled scores:" << endl;
-    // for(int row=0;row<M;row++){
-    //     float rowsum=0;
-    //     for(int col=0;col<N;col++){
+    // for(size_t row=0;row<M;row++){
+    //     float rowsum=0.0f;
+    //     for(size_t col=0;col<N;col++){
     //         cout<<h_scores[row*N+col]<<" ";
     //         rowsum+=h_scores[row*N+col];
     //     }
@@ -250,10 +270,10 @@ int main(){
     //     cout<<endl;
     // }
     //output matrix computation
-    // for (int q_row = 0; q_row < M; q_row++){
-    //     for(int col=0;col<d;col++){
-    //         float sum = 0;
-    //         for(int v_row=0;v_row<N;v_row++){
+    // for (size_t q_row = 0; q_row < M; q_row++){
+    //     for(size_t col=0;col<d;col++){
+    //         float sum = 0.0f;
+    //         for(size_t v_row=0;v_row<N;v_row++){
     //             float attentionweight=h_scores[q_row*N+v_row];
     //             float v_value = h_value[v_row*d+col];
     //             sum = sum+attentionweight*v_value;
@@ -262,10 +282,17 @@ int main(){
     //     }
     // }
     // cout << "\nFinal Attention Output O:" << endl;
-    // for (int row = 0; row < M; row++) {
-    // for (int col = 0; col < d; col++) {
+    // for (size_t row = 0; row < M; row++) {
+    // for (size_t col = 0; col < d; col++) {
     //     cout << h_output[row * d + col] << " ";
     // }
     // cout << endl;
     // }
 }
+
+/*
+--Avg GPU Scores Execution time: 4933.79ms --
+--GPU Softmax Execution time: 4334.82ms --
+--CPU Scores Time = 78359.7ms --
+--CPU Softmax Time = 17781.5ms --
+*/
