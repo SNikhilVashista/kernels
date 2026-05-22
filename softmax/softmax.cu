@@ -58,6 +58,63 @@ __global__ void compute_softmax_kernel1(float* scores, int M, int N){
     }
 }
 
+__global__ void compute_softmax_kernel2(float *scores,int M, int N)
+{
+    int row = blockIdx.x;   //row 0 for example has [1,2,3,4,3,5,6,4,6,4,7,8,7]
+    int tid = threadIdx.x;  // say thread id 0 is taken and the block corresponding to thread id 0 is 0
+
+    extern __shared__ float smem[]; //dynamic shared mem only for the block(per block) based on no of threads per block
+    if(row>=M) return;
+
+    //step 1 local max per thread
+    float local_max = -INFINITY;
+    for(int col=tid;col<N;col = col+blockDim.x){
+        int id = row*N+col;
+        float val = scores[id];
+        local_max = fmax(local_max,val);
+    }
+    smem[tid] = local_max;
+    __syncthreads();
+
+    //reduction of local_max
+    for(int stride = blockDim.x/2; stride>0; stride>>=1){
+        if(tid<stride){
+            smem[tid] = fmax(smem[tid],smem[tid+stride]);
+        }
+        __syncthreads(); 
+    }
+    float row_max = smem[0];
+    __syncthreads();
+
+    //compute exp(score-max) and local sum per thread
+    float local_sum = 0.0f;
+    for(int col=tid;col<N;col+=blockDim.x){
+        int id = row*N+col;
+        float e = expf(scores[id]-row_max);
+        scores[id] = e;
+        local_sum+=e;
+    }
+    smem[tid] = local_sum;
+    __syncthreads();
+
+    //reduction of local_sum
+    for(int stride = blockDim.x/2;stride>0;stride>>=1){
+        if(tid<stride){
+            smem[tid]+=smem[tid+stride];
+        }
+        __syncthreads();
+    }
+
+    float row_sum = smem[0];
+    __syncthreads();
+
+    //step 3: normalize
+    for(int col=tid;col<N;col+=blockDim.x){
+        int id = row*N+col;
+        scores[id] = scores[id]/row_sum;
+    }
+}
+
 
 int main(){
     //  attention(q,k,v) = softmax(qxk(t)/sqrt(d_k)*V)
@@ -131,52 +188,45 @@ int main(){
     cout<<"--Avg GPU Scores Execution time: "<< ms<<"ms --\n";
 
     //===softmax-gpu-kernel--launch
-    dim3 softmaxthreads(1024);
-    dim3 softmaxBlocks((M+softmaxthreads.x-1)/softmaxthreads.x);
-    vector<float> h_scores_gpu(scores);
-    CUDA_CHECK(cudaMemcpy(&h_scores_gpu[0],d_scores,scores * sizeof(float),cudaMemcpyDeviceToHost));
+    // dim3 softmaxthreads(1024);
+    // dim3 softmaxBlocks((M+softmaxthreads.x-1)/softmaxthreads.x);
+    // vector<float> h_scores_gpu(scores);
+    // CUDA_CHECK(cudaMemcpy(&h_scores_gpu[0],d_scores,scores * sizeof(float),cudaMemcpyDeviceToHost));
+    // cudaEventRecord(start);
+    // compute_softmax_kernel1<<<softmaxBlocks,softmaxthreads>>>(d_scores,M,N);
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&ms, start, stop);
+    // cout<<"--GPU Softmax Execution time: "<< ms <<"ms --\n";
+    // vector<float> h_softmax_gpu(scores);
+    // CUDA_CHECK(cudaMemcpy(&h_softmax_gpu[0],d_scores,scores*sizeof(float),cudaMemcpyDeviceToHost));
+    
+    
+    //==softmax-gpu-kernal2-launch
+    dim3 softmaxthreadsperblock(256);
+    dim3 softmaxblockdim(M);
+    size_t sharedmemsize = softmaxthreadsperblock.x*sizeof(float);
+
     cudaEventRecord(start);
-    compute_softmax_kernel1<<<softmaxBlocks,softmaxthreads>>>(d_scores,M,N);
+    compute_softmax_kernel2<<<softmaxblockdim,softmaxthreadsperblock,sharedmemsize>>>(
+       d_scores,M,N
+    );
+    CUDA_CHECK(cudaGetLastError());
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
-    cout<<"--GPU Softmax Execution time: "<< ms <<"ms --\n";
+
+    cout << "--GPU Softmax Kernel2 Execution time: " << ms << "ms --\n";
+
     vector<float> h_softmax_gpu(scores);
-    CUDA_CHECK(cudaMemcpy(&h_softmax_gpu[0],d_scores,scores*sizeof(float),cudaMemcpyDeviceToHost));
-    // dim3 softmaxthreads(256);
-    // dim3 softmaxBlocks(M);
-    // size_t sharedmemsize = softmaxBlocks.x*sizeof(float);
-   // compute_softmax_kernel2<<<softmaxBlocks,softmaxthreads,sharedmemsize>>>(
-     //   d_scores,M,N
-    //);
-    // cout << "\nK matrix:" << endl;
-    // for(int row=0;row<N;row++){
-    //     for(int col=0;col<d;col++){
-    //         cout<<h_key[row*d+col]<<" ";
-    //     }
-    //     cout<<endl;
-    // }
-    // cout << "\nQ matrix:" << endl;
-    // for(int row=0;row<M;row++){
-    //     for(int col=0;col<d;col++){
-    //         cout<<h_query[row*d+col]<<" ";
-    //     }
-    //     cout<<endl;
-    // }
-    // cout << "\nV matrix:" << endl;
-    // for(int row=0;row<N;row++){
-    //     for(int col=0;col<d;col++){
-    //         cout<<h_value[row*d+col]<<" ";
-    //     }
-    //     cout<<endl;
-    // }
-    // cout << "\nO matrix:" << endl;
-    // for(int row=0;row<M;row++){
-    //     for(int col=0;col<d;col++){
-    //         cout<<h_output[row*d+col]<<" ";
-    //     }
-    //     cout<<endl;
-    // }
+
+    CUDA_CHECK(cudaMemcpy(
+        &h_softmax_gpu[0],
+        d_scores,
+        scores * sizeof(float),
+        cudaMemcpyDeviceToHost
+    )); 
     cudaFree(d_scores);
     cudaFree(d_query);
     cudaFree(d_key);
@@ -196,31 +246,7 @@ int main(){
     auto cend = chrono::high_resolution_clock::now();
     chrono::duration<double,milli> elapsed = cend-cstart;
     cout<<"--CPU Scores Time = "<<elapsed.count()<<"ms --\n";
-    // cout << "\nScores matrix(scaled):" << endl;
-    // for(size_t row=0;row<M;row++){
-    //     for(size_t col=0;col<N;col++){
-    //         cout<<h_scores[row*N+col]<<" ";
-    //     }
-    //     cout<<endl;
-    // }
-    // cout << "\nGPU Scores matrix(scaled):" << endl;
-    // for (size_t row = 0; row < M; row++) {
-    // for (size_t col = 0; col < N; col++) {
-    //     cout << h_scores_gpu[row * N + col] << " ";
-    // }
-    // cout << endl;
-    // }
 
-//     float max_error = 0.0f;
-//     for (size_t i = 0; i < scores; i++) {
-//     float error = fabs(h_scores[i] - h_scores_gpu[i]);
-//     if (error > max_error) {
-//         max_error = error;
-//     }
-//     }
-
-// cout << "\nMax error between CPU scores and GPU scores = "
-//      << max_error << endl;
     cstart = chrono::high_resolution_clock::now();
     //attention weight calculation on cpu
     for(size_t row=0;row<M;row++){
@@ -248,27 +274,7 @@ int main(){
     cend = chrono::high_resolution_clock::now();
     elapsed = cend-cstart;
     cout<<"--CPU Softmax Time = "<<elapsed.count()<<"ms --\n";
-    // float softmax_max_error = 0.0f;
-    // for (size_t i = 0; i < scores; i++) {
-    //     float error = fabs(h_scores[i] - h_softmax_gpu[i]);
-
-    //     if (error > softmax_max_error) {
-    //         softmax_max_error = error;
-    //     }
-    // }
-
-    // cout << "\nMax error between CPU softmax and GPU softmax = "
-    //     << softmax_max_error << endl;
-    // cout << "\nsoftmax on scaled scores:" << endl;
-    // for(size_t row=0;row<M;row++){
-    //     float rowsum=0.0f;
-    //     for(size_t col=0;col<N;col++){
-    //         cout<<h_scores[row*N+col]<<" ";
-    //         rowsum+=h_scores[row*N+col];
-    //     }
-    //     cout<<" | Row sum = "<<rowsum;
-    //     cout<<endl;
-    // }
+   
     //output matrix computation
     // for (size_t q_row = 0; q_row < M; q_row++){
     //     for(size_t col=0;col<d;col++){
@@ -281,18 +287,34 @@ int main(){
     //         h_output[q_row*d+col]=sum;
     //     }
     // }
-    // cout << "\nFinal Attention Output O:" << endl;
-    // for (size_t row = 0; row < M; row++) {
-    // for (size_t col = 0; col < d; col++) {
-    //     cout << h_output[row * d + col] << " ";
-    // }
-    // cout << endl;
-    // }
 }
 
 /*
+Benchmark: M = 30000, N = 30000, d = 64
+GPU: NVIDIA GeForce GTX 1650 Max-Q, sm_75
+
+Naive softmax kernel 1:
+- Scores kernel: one thread computes one Scores[row][col]
+- Softmax kernel: one thread computes one full row
+
+Output:
 --Avg GPU Scores Execution time: 4933.79ms --
 --GPU Softmax Execution time: 4334.82ms --
 --CPU Scores Time = 78359.7ms --
 --CPU Softmax Time = 17781.5ms --
+
+Optimized softmax kernel 2:
+- Scores kernel: one thread computes one Scores[row][col]
+- Softmax kernel: one block computes one row
+- 256 threads per block cooperate using shared memory reduction
+
+Output:
+--Avg GPU Scores Execution time: 4914.19ms --
+--GPU Softmax Kernel2 Execution time: 201.03ms --
+--CPU Scores Time = 45228.3ms --
+--CPU Softmax Time = 12342.5ms --
+
+Softmax improvement:
+4334.82 ms -> 201.03 ms
+~21.56x faster
 */
