@@ -5,7 +5,7 @@
 
 #define TILE 16
 
-__global__ void compute_scores_kernel(float *Q, float *K, float *scores, int M, int N, int d)
+__global__ void compute_scores_kernel(const float *Q,const float *K, float *scores, int M, int N, int d)
 {
     int tid_col = blockIdx.x * blockDim.x + threadIdx.x;
     int tid_row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -97,6 +97,7 @@ void launch_scores_naive(
               (M + block.y - 1) / block.y);
 
     compute_scores_kernel<<<grid, block>>>(d_query, d_key, d_scores, M, N, d);
+    std::cout << "--GPU Scores(naive) Execution time: " << ms << "ms --\n";
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -113,5 +114,6 @@ void launch_scores_tiled(
               (M + TILE - 1) / TILE);
 
     compute_scores_tiled_kernel<<<grid, block>>>(d_query, d_key, d_scores, M, N, d);
+    std::cout << "--GPU Scores(Tiled) Execution time: " << ms << "ms --\n";
     CUDA_CHECK(cudaGetLastError());
 }

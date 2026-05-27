@@ -61,7 +61,6 @@ int main() {
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
 
-    std::cout << "--GPU Scores Execution time: " << ms << "ms --\n";
 
     CUDA_CHECK(cudaEventRecord(start));
     launch_softmax_shared(d_scores, M, N);
@@ -69,7 +68,6 @@ int main() {
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
 
-    std::cout << "--GPU Softmax Shared Execution time: " << ms << "ms --\n";
 
     CUDA_CHECK(cudaFree(d_scores));
     CUDA_CHECK(cudaFree(d_query));
