@@ -97,7 +97,6 @@ void launch_scores_naive(
               (M + block.y - 1) / block.y);
 
     compute_scores_kernel<<<grid, block>>>(d_query, d_key, d_scores, M, N, d);
-    std::cout << "--GPU Scores(naive) Execution time: " << ms << "ms --\n";
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -114,6 +113,5 @@ void launch_scores_tiled(
               (M + TILE - 1) / TILE);
 
     compute_scores_tiled_kernel<<<grid, block>>>(d_query, d_key, d_scores, M, N, d);
-    std::cout << "--GPU Scores(Tiled) Execution time: " << ms << "ms --\n";
     CUDA_CHECK(cudaGetLastError());
 }

@@ -130,7 +130,6 @@ void launch_softmax_naive(float* d_scores, int M, int N) {
 
     compute_softmax_kernel1<<<grid, block>>>(d_scores, M, N);
     CUDA_CHECK(cudaGetLastError());
-    std::cout << "--GPU Softmax (One thread per row) Execution time: " << ms << "ms --\n";
 }
 
 void launch_softmax_shared(float* d_scores, int M, int N) {
@@ -141,7 +140,6 @@ void launch_softmax_shared(float* d_scores, int M, int N) {
 
     compute_softmax_kernel2<<<grid, block, shared_mem>>>(d_scores, M, N);
     CUDA_CHECK(cudaGetLastError());
-    std::cout << "--GPU Softmax (Block per row + Redction) Execution time: " << ms << "ms --\n";
 }
 
 void launch_softmax_online(float* d_scores, int M, int N) {
