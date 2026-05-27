@@ -1,3 +1,5 @@
 *.exe
-*.lib
 *.exp
+*.lib
+*.ncu-rep
+.ipynb_checkpoints/
