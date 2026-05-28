@@ -3,8 +3,6 @@
 
 #include <cmath>
 
-#define TILE 16
-
 __global__ void compute_scores_kernel(const float *Q,const float *K, float *scores, int M, int N, int d)
 {
     int tid_col = blockIdx.x * blockDim.x + threadIdx.x;

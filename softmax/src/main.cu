@@ -7,6 +7,26 @@
 #include <cstdlib>
 #include <ctime>
 
+template <typename Func>
+float time_gpu(const char *name, Func func){
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    
+    CUDA_CHECK(cudaEventRecord(start));
+
+    func();
+
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    float ms=0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&ms,start,stop));
+    std::cout<<"--"<<name<<": "<<ms<<" ms --\n";
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    return ms;
+}
+
 int main() {
     int M = 32768;
     int N = 32768;
@@ -49,36 +69,37 @@ int main() {
     CUDA_CHECK(cudaMemcpy(d_value, h_value.data(), vsize * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_output, h_output.data(), osize * sizeof(float), cudaMemcpyHostToDevice));
 
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
+    std::cout << "\n===== Scores Kernels =====\n";
 
-    float ms = 0.0f;
+    time_gpu("Scores naive", [&]() {
+        launch_scores_naive(d_query, d_key, d_scores, M, N, d);
+    });
 
-    CUDA_CHECK(cudaEventRecord(start));
+    time_gpu("Scores tiled", [&]() {
+        launch_scores_tiled(d_query, d_key, d_scores, M, N, d);
+    });
+
+    std::cout << "\n===== Softmax Kernels =====\n";
+
     launch_scores_tiled(d_query, d_key, d_scores, M, N, d);
-    CUDA_CHECK(cudaEventRecord(stop));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    time_gpu("Softmax naive one-thread-per-row", [&]() {
+        launch_softmax_naive(d_scores, M, N);
+    });
 
-    std::cout << "--GPU Scores Execution time: " << ms << "ms --\n";
+    launch_scores_tiled(d_query, d_key, d_scores, M, N, d);
+    time_gpu("Softmax shared one-block-per-row", [&]() {
+        launch_softmax_shared(d_scores, M, N);
+    });
 
-    CUDA_CHECK(cudaEventRecord(start));
-    launch_softmax_shared(d_scores, M, N);
-    CUDA_CHECK(cudaEventRecord(stop));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-
-    std::cout << "--GPU Softmax (Block per row + reduction) Execution time: " << ms << "ms --\n";
-
+    launch_scores_tiled(d_query, d_key, d_scores, M, N, d);
+    time_gpu("Softmax online one-thread-per-row", [&]() {
+        launch_softmax_online(d_scores, M, N);
+    });
     CUDA_CHECK(cudaFree(d_scores));
     CUDA_CHECK(cudaFree(d_query));
     CUDA_CHECK(cudaFree(d_key));
     CUDA_CHECK(cudaFree(d_value));
     CUDA_CHECK(cudaFree(d_output));
-
-    CUDA_CHECK(cudaEventDestroy(start));
-    CUDA_CHECK(cudaEventDestroy(stop));
 
     return 0;
 }
